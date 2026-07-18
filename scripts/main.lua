@@ -1,6 +1,6 @@
 -- =============================================================================
--- 🧠 MAIN SCRIPT - Bộ não điều khiển toàn bộ quy trình
--- Railway sẽ điều khiển script này qua các state
+-- 🧠 MAIN SCRIPT - CORE BRAIN - Bộ não điều khiển toàn bộ quy trình
+-- State Machine: Game Default → Pullup Training → Raid (nếu cooldown xong)
 -- =============================================================================
 
 local Players = game:GetService("Players")
@@ -32,11 +32,12 @@ local SHOP_VEST = Vector3.new(-2069.079346, 8.374999, -1667.621826)
 -- ============================================================================
 -- 🔁 STATE FLAGS
 -- ============================================================================
-local currentState = "idle" -- idle, padding_to_pullup, buying_vest, on_pullup, raid1, raid2
+local currentState = "game_default" -- game_default, on_pullup, raid1, raid2
 local isPathfinding = false
 local stopPathfinding = false
 local kickDetected = false
 local currentServerId = game.JobId
+local scriptRunning = true
 
 -- ============================================================================
 -- ⏳ WAIT FOR CHARACTER
@@ -141,6 +142,76 @@ end
 local function updateAutoMacroStatus(enabled)
     sendToRailway("/api/automacro/status", { accountId = ACCOUNT_ID, enabled = enabled })
     print("🔧 AutoMacro status updated:", enabled)
+end
+
+-- ============================================================================
+-- 🎮 STATE DETECTION
+-- ============================================================================
+local function detectGameState()
+    -- Kiểm tra xem đang ở map default hay trong raid
+    local mapName = workspace:GetAttribute("MapName") or "default"
+    
+    if string.find(string.lower(mapName), "raid1") or string.find(string.lower(mapName), "raid 1") then
+        return "raid1"
+    elseif string.find(string.lower(mapName), "raid2") or string.find(string.lower(mapName), "raid 2") then
+        return "raid2"
+    else
+        return "game_default"
+    end
+end
+
+-- ============================================================================
+-- 🚂 RAILWAY COOLDOWN CHECK
+-- ============================================================================
+local function checkRaidCooldown(raidName)
+    local url = RAILWAY_URL .. "/api/state/" .. ACCOUNT_ID .. "/cooldown/" .. raidName
+    local success, response = pcall(function()
+        return HttpService:RequestAsync({
+            Url = url,
+            Method = "GET"
+        })
+    end)
+    
+    if success and response then
+        local data = HttpService:JSONDecode(response.Body)
+        if data and data.cooldown then
+            return data.cooldown <= 0, data.cooldown
+        end
+    end
+    
+    -- Nếu không thể check, mặc định là chưa cooldown
+    return false, 9999
+end
+
+-- ============================================================================
+-- 📥 LOAD RAID SCRIPTS FROM GITHUB
+-- ============================================================================
+local RAID_SCRIPTS_URL = "https://raw.githubusercontent.com/phuoculi1810-hub/gamevipcuatao/main/scripts"
+
+local function loadRaidScript(raidName)
+    local url = RAID_SCRIPTS_URL .. "/" .. raidName .. ".lua"
+    print("📥 Loading raid script:", url)
+    
+    local success, response = pcall(function()
+        return game:HttpGet(url)
+    end)
+    
+    if success and response then
+        local ok, err = pcall(function()
+            loadstring(response)()
+        end)
+        
+        if ok then
+            print("✅ Raid script loaded successfully:", raidName)
+            return true
+        else
+            warn("❌ Error executing raid script:", err)
+            return false
+        end
+    else
+        warn("❌ Failed to load raid script:", response)
+        return false
+    end
 end
 
 local function hasVestInInventory()
@@ -337,6 +408,9 @@ local function padTo(targetPosition)
     end
     
     local waypoints = path:GetWaypoints()
+    local lastPosition = rootPart.Position
+    local stuckCounter = 0
+    
     for i, waypoint in ipairs(waypoints) do
         if stopPathfinding then break end
         if i == 1 then continue end
@@ -370,6 +444,33 @@ local function padTo(targetPosition)
             if distToTarget <= 50 then
                 stopRun()
             end
+            
+            -- Anti-fly: Check nếu bị hất lên quá cao
+            if rootPart.Position.Y > targetPos.Y + 10 then
+                print("🚀 Anti-fly: Bị hất lên quá cao → Reset position")
+                humanoid:MoveTo(lastPosition)
+                task.wait(0.5)
+            end
+            
+            -- Anti-stuck: Check nếu không di chuyển
+            local currentPos = rootPart.Position
+            local movedDistance = (currentPos - lastPosition).Magnitude
+            if movedDistance < 0.5 then
+                stuckCounter = stuckCounter + 1
+                if stuckCounter > 3 then
+                    print("⚠️ Anti-stuck: Kẹt cứng → Jump và né")
+                    humanoid.Jump = true
+                    if checkPlayerBlocking() then
+                        humanoid:MoveTo(targetPos + rootPart.CFrame.RightVector * (STEER_OFFSET * 2))
+                    else
+                        humanoid:MoveTo(targetPos + Vector3.new(0, 5, 0))
+                    end
+                    stuckCounter = 0
+                end
+            else
+                stuckCounter = 0
+            end
+            lastPosition = currentPos
             
             if checkPlayerBlocking() then
                 humanoid:MoveTo(targetPos + rootPart.CFrame.RightVector * STEER_OFFSET)
@@ -541,37 +642,32 @@ local function clickNearestPullup()
 end
 
 -- ============================================================================
--- 🎯 MAIN LOOP
+-- 🎯 STATE MACHINE - GAME DEFAULT
 -- ============================================================================
-print("🧠 Main Script đang khởi động...")
-updateStatus("initializing")
-
--- Đợi load xong
-while not game:IsLoaded() do task.wait(0.5) end
-while not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") do
-    task.wait(0.5)
-end
-task.wait(2)
-print("✅ Game load xong!")
-
--- Di chuyển khỏi safezone
-updateStatus("exiting_safezone")
-moveToClearSafezone()
-task.wait(3)
-
--- Tắt lockon
-clickDisableLockOn()
-task.wait(1)
-
--- Kiểm tra vị trí pullup
-if checkPlayersNearPullup() then
-    print("⚠️ Có người ở vị trí pullup → Hop server")
-    updateStatus("hopping_server")
-    hopServer()
-else
-    print("✅ Vị trí pullup trống")
+local function handleGameDefaultState()
+    print("🎮 State: GAME_DEFAULT")
+    updateStatus("game_default")
     
-    -- Kiểm tra vest
+    -- 1. Di chuyển khỏi safezone
+    print("🚶 Nhích khỏi safezone...")
+    moveToClearSafezone()
+    task.wait(3)
+    
+    -- 2. Tắt lockon
+    print("📱 Tắt lock-on...")
+    clickDisableLockOn()
+    task.wait(1)
+    
+    -- 3. Kiểm tra 2 máy pullup có người không
+    if checkPlayersNearPullup() then
+        print("⚠️ Có người ở 2 máy pullup → Hop server")
+        updateStatus("hopping_server")
+        hopServer()
+        return
+    end
+    print("✅ 2 máy pullup trống")
+    
+    -- 4. Kiểm tra inventory có vest không
     if not hasVestInInventory() then
         print("🛒 Chưa có 80KG Vest → Đi mua")
         updateStatus("buying_vest")
@@ -584,42 +680,212 @@ else
         print("✅ Đã có 80KG Vest")
     end
     
-    -- Đi đến pullup
-    print("🏃 Đi đến vị trí pullup...")
+    -- 5. Kiểm tra lại pullup sau khi mua vest
+    if checkPlayersNearPullup() then
+        print("⚠️ Sau khi mua vest, 2 máy bị chiếm → Hop server")
+        updateStatus("hopping_server")
+        hopServer()
+        return
+    end
+    
+    -- 6. Padding đến pullup
+    print("🏃 Padding đến vị trí pullup...")
     updateStatus("padding_to_pullup")
     local arrived = padTo(PULLUP_1)
-    if arrived then
-        -- Kiểm tra automacro
+    if not arrived then
+        print("❌ Không thể đến được pullup → Hop server")
+        hopServer()
+        return
+    end
+    
+    -- 7. Chọn máy không có người và tập
+    if equipToolByName("80KG Vest") or equipToolByName("Vest 80KG") then
+        print("✅ Đã equip Vest")
+    end
+    
+    -- 8. Kiểm tra AutoMacro
+    if not checkAutoMacro() then
+        print("🔴 AutoMacro đang OFF → Bật lên")
+        pcall(function()
+            ReplicatedStorage.Events.EventCore:FireServer("AutoMacro")
+        end)
+        task.wait(0.5)
+        
         if not checkAutoMacro() then
-            print("🔴 AutoMacro đang OFF → Bật lên")
+            print("❌ Không bật được AutoMacro → Hop server")
+            hopServer()
+            return
+        end
+    end
+    print("✅ AutoMacro đang ON")
+    
+    -- 9. Click máy pullup
+    clickNearestPullup()
+    
+    -- 10. Chuyển sang state on_pullup
+    currentState = "on_pullup"
+    updateStatus("on_pullup")
+    updatePullupStatus(true)
+    print("💪 Đang tập pullup...")
+end
+
+-- ============================================================================
+-- 🎯 STATE MACHINE - ON PULLUP (CHECK RAID COOLDOWN + DEFENSE)
+-- ============================================================================
+local function handleOnPullupState()
+    print("💪 State: ON_PULLUP - Checking raid cooldown...")
+    updateStatus("on_pullup")
+    
+    local pullupTimeoutStart = os.time()
+    local PULLUP_TIMEOUT = 60 -- 60 giây timeout
+    
+    while scriptRunning do
+        task.wait(5) -- Check mỗi 5 giây
+        
+        -- 1. Check combat defense
+        if isInCombat() then
+            print("⚔️ InCombat trong lúc pullup → Đợi hết combat rồi hop")
+            updateCombatStatus(true)
+            waitForCombatEnd()
+            updateCombatStatus(false)
+            print("✅ Hết combat → Hop server")
+            updateStatus("hopping_server")
+            hopServer()
+            return
+        end
+        
+        -- 2. Check pullup machine theft
+        if checkPlayersNearPullup() then
+            print("⚠️ Có người cướm máy pullup → Hop server")
+            updateStatus("hopping_server")
+            hopServer()
+            return
+        end
+        
+        -- 3. Check 60s pullup timeout
+        local timeOnPullup = os.time() - pullupTimeoutStart
+        if timeOnPullup >= PULLUP_TIMEOUT then
+            print("⏱️ Không ở trên pullup 60s → Hop server")
+            updateStatus("hopping_server")
+            hopServer()
+            return
+        end
+        
+        -- 4. Check raid1 cooldown
+        local raid1Ready, raid1Cooldown = checkRaidCooldown("raid1")
+        local raid2Ready, raid2Cooldown = checkRaidCooldown("raid2")
+        
+        print("📊 Raid1 Cooldown:", raid1Cooldown, "s | Raid2 Cooldown:", raid2Cooldown, "s | Pullup Time:", timeOnPullup, "s")
+        
+        if raid1Ready then
+            print("✅ Raid1 cooldown xong → Đi raid1")
+            currentState = "raid1"
+            return
+        end
+        
+        if raid2Ready then
+            print("✅ Raid2 cooldown xong → Đi raid2")
+            currentState = "raid2"
+            return
+        end
+        
+        -- 5. Nếu còn cooldown, tiếp tục tập pullup
+        print("⏳ Còn cooldown → Tiếp tục tập pullup")
+        
+        -- Check xem còn trên máy pullup không
+        if not checkAutoMacro() then
+            print("⚠️ AutoMacro tắt → Re-enable")
             pcall(function()
                 ReplicatedStorage.Events.EventCore:FireServer("AutoMacro")
             end)
-            task.wait(0.5)
-            
-            if not checkAutoMacro() then
-                print("❌ Không bật được AutoMacro → Hop server")
-                updateStatus("hopping_server")
-                hopServer()
-                return
-            end
         end
-        
-        print("✅ AutoMacro đang ON")
-        
-        -- Equip vest
-        if equipToolByName("80KG Vest") or equipToolByName("Vest 80KG") then
-            print("✅ Đã equip Vest")
-        end
-        
-        -- Click máy pullup
-        clickNearestPullup()
-        
-        -- Chuyển sang state pullup
-        updateStatus("on_pullup")
-        updatePullupStatus(true)
-        print("💪 Đang ở trên máy PullUp")
     end
 end
 
-print("🧠 Main Script đã hoàn thành khởi động")
+-- ============================================================================
+-- 🎯 STATE MACHINE - RAID1
+-- ============================================================================
+local function handleRaid1State()
+    print("⚔️ State: RAID1")
+    updateStatus("raid1")
+    
+    -- Load và chạy raid1 script
+    local loaded = loadRaidScript("raid1")
+    if loaded then
+        print("✅ Raid1 script đang chạy...")
+        -- Raid script sẽ tự quản lý, sau khi xong sẽ teleport về map default
+        -- Khi về map default, state sẽ detect lại
+    else
+        print("❌ Không thể load raid1 script → Về pullup")
+        currentState = "on_pullup"
+    end
+end
+
+-- ============================================================================
+-- 🎯 STATE MACHINE - RAID2
+-- ============================================================================
+local function handleRaid2State()
+    print("⚔️ State: RAID2")
+    updateStatus("raid2")
+    
+    -- Load và chạy raid2 script
+    local loaded = loadRaidScript("raid2")
+    if loaded then
+        print("✅ Raid2 script đang chạy...")
+        -- Raid script sẽ tự quản lý, sau khi xong sẽ teleport về map default
+        -- Khi về map default, state sẽ detect lại
+    else
+        print("❌ Không thể load raid2 script → Về pullup")
+        currentState = "on_pullup"
+    end
+end
+
+-- ============================================================================
+-- 🎯 MAIN LOOP - STATE MACHINE
+-- ============================================================================
+print("🧠 Main Script CORE BRAIN đang khởi động...")
+updateStatus("initializing")
+
+-- Đợi load xong
+while not game:IsLoaded() do task.wait(0.5) end
+while not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") do
+    task.wait(0.5)
+end
+task.wait(2)
+print("✅ Game load xong!")
+
+-- Main State Machine Loop
+while scriptRunning do
+    -- Detect current game state
+    local detectedState = detectGameState()
+    print("🎮 Detected state:", detectedState)
+    
+    -- Handle based on state
+    if detectedState == "game_default" then
+        if currentState == "game_default" or currentState == "on_pullup" then
+            if currentState == "game_default" then
+                handleGameDefaultState()
+            else
+                handleOnPullupState()
+            end
+        else
+            -- Nếu từ raid về map default, reset về game_default
+            currentState = "game_default"
+            handleGameDefaultState()
+        end
+    elseif detectedState == "raid1" then
+        currentState = "raid1"
+        handleRaid1State()
+    elseif detectedState == "raid2" then
+        currentState = "raid2"
+        handleRaid2State()
+    else
+        print("⚠️ Unknown state, default to game_default")
+        currentState = "game_default"
+        handleGameDefaultState()
+    end
+    
+    task.wait(1)
+end
+
+print("🧠 Main Script đã dừng")
