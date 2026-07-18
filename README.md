@@ -4,9 +4,7 @@
 
 ```
 d:\OKUPDATERAID\
-├── scripts/              # Main automation scripts
-│   ├── main.lua         # Main brain script - controls entire workflow
-│   ├── pullup_check.lua # Pullup status monitor with 60s timeout
+├── scripts/              # Lua scripts
 │   ├── raid1.lua        # Raid 1 automation script
 │   └── raid2.lua        # Raid 2 automation script
 ├── utils/               # Utility scripts
@@ -14,7 +12,7 @@ d:\OKUPDATERAID\
 │   ├── buy_vest.lua        # Auto buy 80KG vest
 │   └── click_pullup.lua    # Click nearest pullup machine
 ├── logic.txt            # Logic documentation
-├── Loader.lua           # Game loader script
+├── Loader.lua           # CORE BRAIN - Main automation script
 ├── server.js            # Railway server
 ├── package.json         # Node.js dependencies
 ├── .gitignore           # Git ignore rules
@@ -25,48 +23,46 @@ d:\OKUPDATERAID\
 
 ## 🧠 Main Workflow (logic.txt)
 
-### 1. Initial Setup
-- Load script and wait for GameLoad
-- Move 2-3 studs to exit safe zone (no MoveTo)
-- Disable lock-on (scriptclicklockonmobile.lua)
+### CORE (Loader.lua)
+1. **Initial Setup**
+   - Đợi localplayer load và game load xong
+   - Click Play Now
+   - Nhích mất safezone
+   - Tắt lockon
 
-### 2. Pullup Position Check
-- Check if players are near pullup positions (10 studs radius)
-  - Pullup 1: -2066.056152, 8.374999, -1719.620483
-  - Pullup 2: -2053.761963, 8.374999, -1718.615112
-- If players present → hop server (least populated)
+2. **Pullup Check**
+   - Kiểm tra 2 vị trí pullup có người đang tập không
+   - Nếu có → hop server ít người
+   - Nếu không → tiếp tục
 
-### 3. Vest Check & Purchase
-- Check inventory for "80KG Vest"
-- If not present:
-  - Pad to shop vest: -2069.079346, 8.374999, -1667.621826
-  - Buy 80KG Vest (mua_vest.txt)
+3. **Vest Check**
+   - Kiểm tra inventory có 80KG Vest không
+   - Nếu không → padding đến shop mua vest
+   - Nếu có → tiếp tục
 
-### 4. Pullup Machine
-- Pad to pullup position
-- Check if machine is free (no players)
-- Use check_automacro_true_false.txt
-  - If false → fire remote event to enable AutoMacro
-  - Fire once and recheck
-  - If true → OK, if false → hop server
-- Equip 80KG Vest
-- Click nearest pullup machine
+4. **Pullup Setup**
+   - Padding đến vị trí pullup trống
+   - Kiểm tra AutoMacro (true/false)
+   - Nếu false → fire AutoMacro rồi làm bước trên
+   - Equip 80KG vest
+   - Click máy pullup gần nhất
 
-### 5. Raid System
-- Fire remote raid 1
-  - If teleport message → OK
-  - If cooldown message → save to Railway, wait, then retry
-  - If entered raid → switch to raid state
-  - When teleporting to raid 1 → wait for load, then run raid1 script
-- Fire remote raid 2
-  - Same logic as raid 1
-  - When teleporting to raid 2 → wait for load, then run raid2 script
+5. **Raid Fire**
+   - Check Railway API xem raid1/raid2 cooldown xong chưa
+   - Nếu cooldown xong → fire raid event (Create rồi Start)
+   - Nếu còn cooldown → gửi lên Railway đợi
+   - Load raid script từ GitHub
+
+### Defense Logic
+- Trong lúc padding nếu bị incombat → đợi hết rồi hop server
+- Quá 30s không trên máy pullup → hop server
+- Nếu có người cướm máy pullup → hop server
 
 ## 🛡️ Defense Mechanisms
 
 - **Combat Detection**: If attacked during padding → stop, wait for combat end, then hop server
 - **Machine Theft**: If someone steals pullup machine → hop server (wait for combat end first if in combat)
-- **60s Timeout**: If not on pullup for 60s → hop server (wait for combat end first if in combat)
+- **30s Timeout**: If not on pullup for 30s → hop server (wait for combat end first if in combat)
 - **Anti-Fly Padding**: Prevent being launched into the air when hitting obstacles
 
 ## 🏃 Padding Logic (from AutoFarmStrength_v8_new_update.lua)
@@ -91,27 +87,27 @@ Railway acts as the brain and can:
 
 ## 🎯 Architecture
 
-- **Railway**: Brain/controller
-- **Main script**: Handles player, vest, padding, and defense during pullup
-- **Raid logic**: Runs separately when entering raid, controlled by the brain
+- **Railway**: Brain/controller - lưu trạng thái và cooldown
+- **Loader.lua**: CORE BRAIN - xử lý toàn bộ flow từ load game đến raid
+- **Raid scripts**: raid1.lua, raid2.lua - chạy riêng khi vào raid
 
 ## 📝 Script Descriptions
 
-### scripts/main.lua
-Main brain script that:
-- Waits for game load
-- Exits safe zone
-- Disables lock-on
-- Checks pullup positions
-- Manages vest purchase
-- Handles pullup machine interaction
-- Controls raid firing
-
-### scripts/pullup_check.lua
-Monitors pullup status with:
-- 60s timeout if not on pullup
-- Combat detection before hopping
-- Automatic server hop on timeout
+### Loader.lua (CORE BRAIN)
+Main automation script that:
+- Đợi localplayer load và game load xong
+- Click Play Now
+- Nhích mất safezone
+- Tắt lock-on
+- Kiểm tra 2 vị trí pullup có người không
+- Kiểm tra và mua 80KG Vest nếu cần
+- Padding đến vị trí pullup trống
+- Kiểm tra và bật AutoMacro
+- Equip vest và click máy pullup
+- Check Railway API cho raid cooldown
+- Fire raid events (Create rồi Start)
+- Load raid scripts từ GitHub
+- Defense logic (combat, theft, timeout)
 
 ### scripts/raid1.lua
 Raid 1 automation:
@@ -139,12 +135,12 @@ Finds and clicks nearest pullup machine
 
 ## 🔧 Configuration
 
-Edit the following in scripts/main.lua:
+Edit the following in Loader.lua:
+- `RAILWAY_URL = "http://localhost:3000"` - Railway server URL
 - `AGENT_RADIUS = 3.0` - Pathfinding agent radius
-- `DETECT_DISTANCE = 6` - Raycast detection distance
-- `STEER_OFFSET = 4` - Steering offset for dodging players
 - Pullup coordinates (PULLUP_1, PULLUP_2)
 - Shop vest coordinates (SHOP_VEST)
+- `PULLUP_TIMEOUT = 30` - Pullup timeout in seconds
 
 ## 🚀 Usage
 
