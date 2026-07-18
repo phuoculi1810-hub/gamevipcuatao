@@ -26,18 +26,22 @@ function getAccountState(accountId) {
     if (!accountStates.has(accountId)) {
         accountStates.set(accountId, {
             id: accountId,
-            status: 'idle', // idle, padding, buying_vest, on_pullup, raid1, raid2
+            status: 'idle', // idle, loading, clicking_play, moving_safezone, disabling_lockon, checking_pullup, padding_glass, padding_shop, buying_vest, checking_automacro, equipping_vest, padding_pullup, clicking_pullup, on_pullup, checking_cooldown, firing_raid1, firing_raid2, in_raid1, in_raid2, raid_wave, raid_boss, teleporting_back, hopping_server
             lastUpdate: new Date().toISOString(),
             cooldown: {
                 raid1: 0,
-                raid2: 0
+                raid2: 0,
+                raid1StartTime: null,
+                raid2StartTime: null
             },
             serverId: null,
             isInCombat: false,
             isOnPullup: false,
             lastPullupTime: null,
             vestOwned: false,
-            autoMacroEnabled: false
+            autoMacroEnabled: false,
+            currentWave: null,
+            raidType: null // 'raid1' or 'raid2'
         });
     }
     return accountStates.get(accountId);
@@ -87,20 +91,25 @@ app.get('/api/state/:accountId', (req, res) => {
     res.json(state);
 });
 
-// Update account status
+// Update account status with detailed info
 app.post('/api/state/:accountId/status', (req, res) => {
     const { accountId } = req.params;
-    const { status } = req.body;
+    const { status, raidType, wave } = req.body;
     
     if (!status) {
         return res.status(400).json({ error: 'Status is required' });
     }
     
-    const state = updateAccountState(accountId, { status });
+    const updates = { status };
+    if (raidType) updates.raidType = raidType;
+    if (wave) updates.currentWave = wave;
+    
+    const state = updateAccountState(accountId, updates);
+    console.log(`[Status Update] ${accountId}: ${status}`);
     res.json({ success: true, state });
 });
 
-// Update cooldown
+// Update cooldown with timestamp
 app.post('/api/state/:accountId/cooldown', (req, res) => {
     const { accountId } = req.params;
     const { raid, seconds } = req.body;
@@ -110,13 +119,18 @@ app.post('/api/state/:accountId/cooldown', (req, res) => {
     }
     
     const state = getAccountState(accountId);
+    const now = new Date();
+    
     if (raid === 'raid1') {
         state.cooldown.raid1 = seconds;
+        state.cooldown.raid1StartTime = now.toISOString();
     } else if (raid === 'raid2') {
         state.cooldown.raid2 = seconds;
+        state.cooldown.raid2StartTime = now.toISOString();
     }
     
-    state.lastUpdate = new Date().toISOString();
+    state.lastUpdate = now.toISOString();
+    console.log(`[Cooldown Update] ${accountId} ${raid}: ${seconds}s`);
     res.json({ success: true, state });
 });
 
@@ -320,6 +334,60 @@ app.post('/api/automacro/status', (req, res) => {
     
     res.json({ success: true, state });
 });
+
+// =============================================================================
+// ⏱️ AUTOMATIC COOLDOWN COUNTDOWN
+// =============================================================================
+
+// Update cooldowns every second
+setInterval(() => {
+    const now = new Date();
+    
+    for (const [accountId, state] of accountStates.entries()) {
+        let updated = false;
+        
+        // Update Raid1 cooldown
+        if (state.cooldown.raid1 > 0 && state.cooldown.raid1StartTime) {
+            const elapsed = Math.floor((now - new Date(state.cooldown.raid1StartTime)) / 1000);
+            const remaining = Math.max(0, state.cooldown.raid1 - elapsed);
+            
+            if (remaining !== state.cooldown.raid1) {
+                state.cooldown.raid1 = remaining;
+                updated = true;
+                
+                if (remaining === 0) {
+                    console.log(`[Cooldown Ready] ${accountId} Raid1 cooldown finished!`);
+                    // Update status to indicate ready
+                    if (state.status === 'waiting_cooldown') {
+                        state.status = 'idle';
+                    }
+                }
+            }
+        }
+        
+        // Update Raid2 cooldown
+        if (state.cooldown.raid2 > 0 && state.cooldown.raid2StartTime) {
+            const elapsed = Math.floor((now - new Date(state.cooldown.raid2StartTime)) / 1000);
+            const remaining = Math.max(0, state.cooldown.raid2 - elapsed);
+            
+            if (remaining !== state.cooldown.raid2) {
+                state.cooldown.raid2 = remaining;
+                updated = true;
+                
+                if (remaining === 0) {
+                    console.log(`[Cooldown Ready] ${accountId} Raid2 cooldown finished!`);
+                    if (state.status === 'waiting_cooldown') {
+                        state.status = 'idle';
+                    }
+                }
+            }
+        }
+        
+        if (updated) {
+            state.lastUpdate = now.toISOString();
+        }
+    }
+}, 1000);
 
 // =============================================================================
 // 🎮 DASHBOARD UI
