@@ -1,18 +1,30 @@
 {
-  "name": "raid2-bot-server",
+  "name": "okupdateraid",
   "version": "1.0.0",
-  "description": "Railway server + dashboard for Raid2 auto farm bot",
+  "description": "Auto Raid System with Railway Control",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
-  },
-  "engines": {
-    "node": ">=18"
+    "dev": "node server.js"
   },
   "dependencies": {
+    "express": "^4.18.2",
     "cors": "^2.8.5",
-    "express": "^4.21.2",
-    "uuid": "^11.1.0"
-  }
+    "body-parser": "^1.20.2"
+  },
+  "engines": {
+    "node": ">=16.x"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/okupdateraid"
+  },
+  "keywords": [
+    "roblox",
+    "raid",
+    "automation",
+    "railway"
+  ],
+  "author": "",
+  "license": "MIT"
 }
